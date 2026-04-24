@@ -8,4 +8,12 @@ data
 
 The Linear Mixed Model Respiration file contains the R Code for the linear mixed effects model used to analyze the respiration data
 
-The CONC_Data File contains the concentration data from the Gas Chromatograph and the 
+The CONC_Data File contains the concentration data from the Gas Chromatograph and each sensor at the set time steps when each mesocosm
+was purged
+
+The Respiration_Data file contains the concentration data from the Gas Chromatograph and sensor measurements at the set time steps
+when each mesocosm was purged
+
+The Supplementary Materials file contains the build specs for the sensors, including wiring diagrams
+
+The Arduino Sketch file contains an example of the arduino sketch file. 
