@@ -16,4 +16,6 @@ when each mesocosm was purged
 
 The Supplementary Materials file contains the build specs for the sensors, including wiring diagrams
 
-The Arduino Sketch file contains an example of the arduino sketch file. 
+The K30_10_sec_S0 file contains a sketch for the arduino data logger and K30 CO2 sensor that takes measurements every 10 seconds
+
+The K30_1_Min_S1 file contains a sketch for the arduino data logger and K30 CO2 sensor that takes measurements every 1 minute
