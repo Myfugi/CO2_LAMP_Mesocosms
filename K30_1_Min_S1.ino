@@ -1,6 +1,7 @@
 /*
  Author: Joseph M. Myre (joemyre@gmail.com)
  Modified 8/29/2016 by Matt Covington to add power cycling capability
+ Modified March 2024 by Summer Lockhart to change file names and sensor measurement frequency
  
  This program connects an Arduino to a Cozir CO2 ambient sensor 
  and reports readings back over the USB serial interface and 
