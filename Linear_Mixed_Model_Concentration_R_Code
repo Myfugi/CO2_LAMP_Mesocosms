@@ -7,6 +7,9 @@ library(ggplot2)
 library(rstatix)
 library(lme4)
 library(lmerTest)
+library(easystats)
+library(tidyverse)
+library(glmmTMB)
 
 #load in data
 CONC<-read.delim(file.choose())
@@ -14,43 +17,351 @@ CONC<-read.delim(file.choose())
 #Check Structure of the data
 str(CONC)
 head(CONC)
+CONC
+#Need to set ID, Sensor, Run, Hours, and Method as "Factors" 
 
-#Need to set ID, Sensor, Run, Timestep, and Method as "Factors" 
-CONC<-CONC%>%convert_as_factor(ID,Sensor,Run, Timestep,Method)
+CONC<-CONC%>%convert_as_factor(ID,Sensor,Run, Hours,Method)
 
 #check your work
 str(CONC)
 
-#Get Summary Statistics, group by Timestep and Method
-CONC.summary<-summarySE(CONC,measurevar="Concentration",groupvars=c("Timestep","Method"))
-CONC.summary$Timestep<-ordered(CONC.summary$Timestep,levels=c("t0","t12","t24","t48","t72","t240","t408","t576"))
+
+#Get Summary Statistics, group by Hours and Method
+CONC.summary<-summarySE(CONC,measurevar="Concentration",groupvars=c("Hours","Method"))
+
 
 #plot the data to visualize
-CONC1.plot<-ggplot(CONC.summary,aes(x=Timestep,y=Concentration,colour=Method,group=Method))+geom_errorbar(aes(ymin=Concentration-se,ymax=Concentration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+CONC1.plot<-ggplot(CONC.summary,aes(x=Hours,y=Concentration,colour=Method,group=Method))+geom_errorbar(aes(ymin=Concentration-se,ymax=Concentration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
 CONC1.plot
 
 #as we can see from the SE overlap, it doesn't look like the sensor measurement and GC measurement are significant
 #but we need to run a mixed model or repeat measure anova to confirm, but as there are data points missing
 #from the sensor data, a linear mixed model is the better approach
+#We want to look at the effect of sensor on the concentration, to see if there is an effect, and if there is an interaction
 
-#run the linear mixed model: 
-CONC1.lmer<-lmer(Concentration~Timestep*Method + (1|Sensor), data=CONC)
-#Here we're treating Timestep and Method as Fixed Effects, and Sensor as random, since there are 
-#theoretically an infinite number of sensors that can be used the sensors used here are just some of the 
-#sensors in a larger pool of potential sensors
+CONC.Sens.Summary<-summarySE(CONC, measurevar = "Concentration", groupvars = c("Hours","Sensor"))
 
-#run an Anova on the linear mixed model
+#Visualize that data
+CONC.sens.plot<-ggplot(CONC.Sens.Summary,aes(x=Hours,y=Concentration,colour=Sensor,group=Sensor))+geom_errorbar(aes(ymin=Concentration-se,ymax=Concentration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+CONC.sens.plot
+#It doesn't look like the different sensors are obviously different from one another
+
+CONC.All.Summary<-summarySE(CONC, measurevar = "Concentration", groupvars = c("Sensor","Method"))
+CONC.All.plot<-ggplot(CONC.All.Summary,aes(x=Method,y=Concentration,colour=Sensor,group=Sensor))+geom_errorbar(aes(ymin=Concentration-se,ymax=Concentration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+CONC.All.plot
+#Sensor 1 and sensor 2 don't look like they match the GC measurements as well as Sensor 4 does, This is likely due to Sensor 1 R2, where the sensor measurement
+#diverges significantly after 12 hours probably because of a sensor malfunction, as the GC measurements look normal. And sensor 2 Run 2 when the sensor and GC
+#measurements diverge significantly after 240 hours, for an unknown reading, as the sensor behaves normally for the beginning of the third run at which point we're 
+#getting repeat measurements that aren't likely to be accurate. It may be appropriate to remove those data entirely, but first lets see how they are affecting
+#the statistics
+
+
+#Get Summary Statistics, group by Hours and Run
+CONC.Run.Summary<-summarySE(CONC, measurevar = "Concentration", groupvars = c("Hours","Run"))
+
+#Visualize that data
+CONC.Run.plot<-ggplot(CONC.Run.Summary,aes(x=Hours,y=Concentration,colour=Run,group=Run))+geom_errorbar(aes(ymin=Concentration-se,ymax=Concentration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+CONC.Run.plot
+# there's very little obvious effect of run on the concentration, so Run can remain being considered a random effect. 
+
+#run a linear mixed model treating sensor as random to try and rule out run as a significant effect: 
+CONC.lmer<-lmer(Concentration~Hours*Method*Run + (1|Sensor),data=CONC)
+CONC.lmer.anova<-anova(CONC.lmer)
+CONC.lmer.anova
+#When we check the ANOVA, only time is signficant, so we can reasonably treat run as random, or 
+#ignore run from the model entirely, but first let's treat it as a random effect and see how it affects the model
+#run the linear mixed model: here we're treating Hours, Method and sensor as fixed effects, and run as random. 
+CONC1.lmer<-lmer(Concentration~Hours*Method*Sensor + (1|Run), data=CONC)
+
+#Check the Assumption of normality
+CONC1.qqplot<-qqnorm(resid(CONC1.lmer))
+CONC1.qqline<-qqline(resid(CONC1.lmer))
+#Imperfect Normality, there are some pretty clear outliers here, however lme models are robust to
+#violations of normality, so we're going to go ahead and still run anova 
+
+#run an Anova on the linear mixed model wth a type II Wald test
 CONC1.lmer.Anova<-Anova(CONC1.lmer)
 CONC1.lmer.Anova
-#We see here that Timestep is the only significant factor, which is exactly as expected for incubations
-#and there are no interaction effects between timestep and method
-
-#Now we'll run anova using a type III ANOVA using Satterthwaite's method
+#Timestep and sensor are both significant effects, but method is not, however there is a significant interaction
+#effect, so we may need to investigate that further, We're also going to do an anova using a type III ANOVA 
+#using Satterthwaite's method
 CONC1.lmer.anova<-anova(CONC1.lmer)
 CONC1.lmer.anova
-#Again, only timestep is significant, but since it's not a variable we're interested in (again,
-#a change in concentration with time is expected), we'll se intercepts for every timestep (treat it as random)
+#The significant effects are the same so we need to determine whether sensor can be considered random or not. 
+#Theoretically, there are an infinite number of sensors, so it should be reasonable to consider it a random effect, 
+#but since we also have that significant effect, it's worth our time to determine how that effect is significant
+#so that we can determine how random it actually is
 
-CONC2.lmer<-lmer(Concentration~Method + (Timestep|Sensor),data=CONC,REML=FALSE)
-anova(CONC2.lmer)                 
-#Now having only checked on the Method, we find that there is no significant effect of method on the concentration
+
+plot(CONC1.lmer,resid(.,scaled=TRUE)~fitted(.),abline=0,pch=16,xlab="Fitted values",ylab="Standardised residuals")
+#the plot is funnel shaped, indicating that we're violating the assumption of homoskedasticity in the model
+#let's plot this with color to see if we can discern any further patterns, it's further apparent that the residuals vary more as we get up to higher value
+plot(CONC1.lmer,resid(.,scaled=TRUE)~fitted(.),abline=0,pch=16,col=CONC$Sensor,xlab="Fitted values",ylab="Standardised Residuals")
+# 2 of the three sensors are heteroskedastic, and the other appears homoskedastic, again, our problem children
+#here are sensors 1 and 2, and as noted previously this is mostly due to Run 2 where we have some weird sensor
+#behaviors
+
+#Just to see what it looks like, let's treat both sensor and Run as random effects
+CONC2.lmer<-lmer(Concentration~Hours*Method + (Sensor|Run),data=CONC,REML=FALSE)
+anova(CONC2.lmer) 
+
+#we get a singular fit when we run the anova with both sensor and run as random effects, which means we've likely 
+#overfitted the model here, but let's just look at the residuals to see what we've got
+
+plot(CONC2.lmer,resid(.,scaled=TRUE)~fitted(.),abline=0,pch=16,xlab="Fitted values",ylab="Standardised residuals")
+#the plot is still funnel shaped, indicating that we're violating the assumption of homoskedasticity in the model
+#lets look at it in color to confirm
+plot(CONC2.lmer,resid(.,scaled=TRUE)~fitted(.),abline=0,pch=16,col=CONC$Sensor,xlab="Fitted values",ylab="Standardised Residuals")
+#Again, the heteroskedasticity is still apparent, and again, it mostly appears to be occuring in the data
+#for sensors 1 and 2
+
+#Since Run is non significant, we're going to re-run the model with sensor as the only random effect and see if that fit is any better.
+CONC3.lmer<-lmer(Concentration~Hours*Method + (1|Sensor),data=CONC,REML=FALSE)
+anova(CONC3.lmer) 
+#When we ignore run entirely, since it doesn't appear to have any effect at all, and treat sensor as random, 
+#then we no longer get a singular effect and we have time as the only significant effect. As we established when
+#checking the effect of run, we've already determined that it isn't significant so it's reasonable to ignore 
+#run in the model, but let's still check the fit of the model: 
+plot(CONC3.lmer,resid(.,scaled=TRUE)~fitted(.),abline=0,pch=16,xlab="Fitted values",ylab="Standardised residuals")
+#this plot is identical to the previous residual plot, confirming that run is entirely not relevant, 
+#but also indicating that there is still some violation of the homoskedasticity assumption
+plot(CONC3.lmer,resid(.,scaled=TRUE)~fitted(.),abline=0,pch=16,col=CONC$Sensor,xlab="Fitted values",ylab="Standardised Residuals")
+#again, we're having the same sources for the heteroskedasticity, it's sensors one and 2. 
+#We can try to resolve this by removing the potentially problematic data, which is reasonable since we have 
+#good evidence that the sensors were malfunctioning for at least part of the runs, but since the potential for 
+#sensor malfunction is important when we are thinking about whether sensors are a good substitute for GCs, we
+#can first see if a generalized mixed effects model is more effective, or if we can do some numeric tranformations
+#(log transformations, etc.), to deal with the assumptions violations
+
+#First I'm going to try a generalized mixed effects model: 
+#We need to determine how the data is distributed, so we'll do some bootstrapping and see if it matches one of the common distributions
+descdist(CONC$Concentration,discrete=FALSE,boot=500)
+#both the real data and the bootstrap data fall perfectly within our beta distribution, so we now know how our data is distributed
+#but first we need to scale the data, because a beta distribution has to fall between 0 and 1 values for GLMM Modeling
+
+min_val<-min(CONC$Concentration,na.rm=TRUE)
+max_val<-max(CONC$Concentration,na.rm=TRUE)
+scaled_response<-(CONC$Concentration-min_val)/(max_val-min_val)
+N<-length(na.omit(CONC$Concentration))
+CONC$Scaled<-(scaled_response*(N-1)+0.5)/N
+CONC.glmm<-glmmTMB(Scaled~Method*Sensor+(1|Run),family=beta_family(link="logit"),data=CONC)
+check_model(CONC.glmm)
+#Still not getting a good prediction fit, with Sensor as a fixed effect and run as a random 
+#effect #let's look at the anoval for the glmm
+
+Anova(CONC.glmm)
+
+#this is still indicating that Sensor is signficant and that there is a significant 
+#interaction effect between sensor and method, despite method being insignificant
+
+#let's give a try with Sensor as a random effect and run removed from the model entirely'
+CONC1.glmm<-glmmTMB(Scaled~Method + (1|Sensor),family=beta_family(link="logit"),data=CONC)
+check_model(CONC1.glmm)
+#well, model fit is worse when we treat sensor as random. It may be time to consider looking at 
+#discarding the non-logical data. 
+
+CONC2<-read.delim(file.choose())
+#Check Structure of the data
+str(CONC2)
+head(CONC2)
+CONC2
+#Need to set ID, Sensor, Run, Hours, and Method as "Factors" 
+
+CONC2<-CONC2%>%convert_as_factor(ID,Sensor,Run, Hours,Method)
+
+#check your work
+str(CONC2)
+
+
+#Get Summary Statistics, group by Hours and Method
+CONC2.summary<-summarySE(CONC2,measurevar="Concentration",groupvars=c("Hours","Method"))
+
+
+#plot the data to visualize
+CONC2.plot<-ggplot(CONC2.summary,aes(x=Hours,y=Concentration,colour=Method,group=Method))+geom_errorbar(aes(ymin=Concentration-se,ymax=Concentration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+CONC2.plot
+
+#as we can see from the SE overlap, it doesn't look like the sensor measurement and GC measurement are significantly different,
+#this looks a bit better than our graph when we had the full run 2 data set included. 
+
+CONC2.Sens.Summary<-summarySE(CONC2, measurevar = "Concentration", groupvars = c("Hours","Sensor"))
+#We have NANs produced here, that's to be expected with this smaller sample set, we'll see how it comes out in the next steps
+
+#Visualize that data
+CONC2.sens.plot<-ggplot(CONC2.Sens.Summary,aes(x=Hours,y=Concentration,colour=Sensor,group=Sensor))+geom_errorbar(aes(ymin=Concentration-se,ymax=Concentration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+CONC2.sens.plot
+#Sensor 2 now looks obviously different from one and 4, I'm not sure how this will play out for the rest of the data. . . 
+
+CONC2.All.Summary<-summarySE(CONC2, measurevar = "Concentration", groupvars = c("Sensor","Method"))
+CONC2.All.plot<-ggplot(CONC2.All.Summary,aes(x=Method,y=Concentration,colour=Sensor,group=Sensor))+geom_errorbar(aes(ymin=Concentration-se,ymax=Concentration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+CONC2.All.plot
+#OK, the difference between sensor 2 and the other two data sets is more pronounced, but the difference between GC and Sensor for S2
+#is less pronounced. S1 sensor and GC measurements are still wildly different, but we're down to a single run for Sensor 1 so it's 
+#difficult to say if that is reasonable. 
+
+
+#Get Summary Statistics, group by Hours and Run
+CONC2.Run.Summary<-summarySE(CONC2, measurevar = "Concentration", groupvars = c("Hours","Run"))
+
+#Visualize that data
+CONC2.Run2.plot<-ggplot(CONC.Run.Summary,aes(x=Hours,y=Concentration,colour=Run,group=Run))+geom_errorbar(aes(ymin=Concentration-se,ymax=Concentration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+CONC2.Run2.plot
+#as expected, there is no obvious pattern/effect of run
+
+#all right, I'm going to run another test to see if we're still looking at a beta distribution
+descdist(CONC2$Concentration,discrete=FALSE,boot=500)
+#we're still looking at a beta distribution, so I'm going to start with the same glmm as before first transforming the data: 
+
+min_val_2<-min(CONC2$Concentration,na.rm=TRUE)
+max_val_2<-max(CONC2$Concentration,na.rm=TRUE)
+scaled_response_2<-(CONC2$Concentration-min_val_2)/(max_val-min_val_2)
+N2<-length(na.omit(CONC2$Concentration))
+CONC2$Scaled<-(scaled_response_2*(N2-1)+0.5)/N2
+CONC2.glmm<-glmmTMB(Scaled~Method*Sensor+(1|Run),family=beta_family(link="logit"),data=CONC2)
+check_model(CONC2.glmm)
+#Still not getting a good prediction fit, with Sensor as a fixed effect and run as a random 
+#effect #let's look at the anoval for the glmm
+
+Anova(CONC2.glmm)
+
+#so now we're seeing that there is an effect of sensor, but that there is no significant effect of method, and no significant
+#interaction effects between method and sensor, however I'd still like to see if I can get a better model fit. . 
+
+#let's give a try with Sensor as a random effect and run removed from the model entirely'
+CONC3.glmm<-glmmTMB(Scaled~Method + (1|Sensor),family=beta_family(link="logit"),data=CONC2)
+check_model(CONC3.glmm)
+#Again, that makes the fit much worse. let's try with sensor and run both as random effects and see what that does 
+
+CONC4.glmm<-glmmTMB(Scaled~Method+(Run|Sensor),family = beta_family(link="logit"),data=CONC2)
+#OK, now we've over parameterized again. Just for shiggles, I'm going to check and see what an lmer looks like now that I've removed
+#the offending data. . .
+
+CONC4.lmer<-lmer(Concentration~Method*Sensor + (1|Run), data=CONC2)
+#we get a singlular fit with this, so also over parameterized, going to run the anova and see what it looks like. 
+anova(CONC4.lmer)
+#sensor is the only significant effect
+Anova(CONC4.lmer)
+#Sensor is the only significant effect. 
+check_model(CONC4.lmer)
+#lol. Weirdest fit yet.
+
+check_model(CONC.lmer)
+check_model(CONC1.lmer)
+check_model(CONC2.lmer)
+check_model(CONC3.lmer)
+check_model(CONC4.lmer)
+check_model(CONC.glmm)
+check_model(CONC1.glmm)
+check_model(CONC2.glmm)
+check_model(CONC3.glmm)
+check_model(CONC4.glmm)
+
+#the first glmm model that we did: CONC.glmm is the best model fit of all the options that I've run. 
+#the only remaining thing that I can do to try and get a better fit is to log transform the data first, and then run the lmer
+
+CONC3<-read.delim(file.choose())
+#read in the log transformed data
+head(CONC3)
+str(CONC3)
+
+CONC3<-CONC3%>%convert_as_factor(ID,Sensor,Run, Hours,Method)
+
+#check your work
+str(CONC3)
+
+
+#Get Summary Statistics, group by Hours and Method
+CONC3.summary<-summarySE(CONC3,measurevar="Concentration",groupvars=c("Hours","Method"))
+
+
+#plot the data to visualize
+CONC3.plot<-ggplot(CONC3.summary,aes(x=Hours,y=Concentration,colour=Method,group=Method))+geom_errorbar(aes(ymin=Concentration-se,ymax=Concentration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+CONC3.plot
+#Plots look like they aren't significantly different again
+
+CONC3.Sens.Summary<-summarySE(CONC3, measurevar = "Concentration", groupvars = c("Hours","Sensor"))
+
+#Visualize that data
+CONC3.sens.plot<-ggplot(CONC3.Sens.Summary,aes(x=Hours,y=Concentration,colour=Sensor,group=Sensor))+geom_errorbar(aes(ymin=Concentration-se,ymax=Concentration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+CONC3.sens.plot
+#sensors look different, but pattern is more or less the same
+
+CONC3.All.Summary<-summarySE(CONC3, measurevar = "Concentration", groupvars = c("Sensor","Method"))
+CONC3.All.plot<-ggplot(CONC3.All.Summary,aes(x=Method,y=Concentration,colour=Sensor,group=Sensor))+geom_errorbar(aes(ymin=Concentration-se,ymax=Concentration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+CONC3.All.plot
+#Sensor 1 and sensor 2 don't look like they match the GC measurements as well as Sensor 4 does, This is likely due to Sensor 1 R2, where the sensor measurement
+#diverges significantly after 12 hours probably because of a sensor malfunction, as the GC measurements look normal. And sensor 2 Run 2 when the sensor and GC
+#measurements diverge significantly after 240 hours
+
+
+#Get Summary Statistics, group by Hours and Run
+CONC3.Run.Summary<-summarySE(CONC3, measurevar = "Concentration", groupvars = c("Hours","Run"))
+
+#Visualize that data
+CONC3.Run.plot<-ggplot(CONC3.Run.Summary,aes(x=Hours,y=Concentration,colour=Run,group=Run))+geom_errorbar(aes(ymin=Concentration-se,ymax=Concentration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+CONC3.Run.plot
+# there's very little obvious effect of run on the concentration, so Run can remain being considered a random effect. 
+
+#run a linear mixed model treating sensor as random to try and rule out run as a significant effect: 
+CONC3.transformed.lmer<-lmer(Concentration~Hours*Method*Sensor + (1|Run),data=CONC3)
+CONC3.transformed.lmer.anova<-anova(CONC3.transformed.lmer)
+CONC3.transformed.lmer.anova
+check_model(CONC3.transformed.lmer)
+#great model fit. a bit heteroskedastic still
+
+#try with run and sensor both as random effects
+CONC4.transformed.lmer<-lmer(Concentration~Hours*Method +(Sensor|Run),data=CONC3)
+CONC4.transformed.lmer.anova<-anova(CONC4.transformed.lmer)
+CONC4.transformed.lmer.anova
+check_model(CONC4.transformed.lmer)
+#best fit, best parameter uncertainty, best linearity, best everything. 
+
+#We do have some evidence that there are some interactions between sensor and method, 
+#and between run and method, but the effects appear to be random, and we get the best model fit
+#when we treat them as such. 
+
+#try with run and sensor both as random effects
+CONC5.transformed.lmer<-lmer(Concentration~Hours*Method +(1|Run)+(1|Sensor),data=CONC3)
+CONC5.transformed.lmer.anova<-anova(CONC4.transformed.lmer)
+CONC5.transformed.lmer.anova
+check_model(CONC5.transformed.lmer)
+
+#now let's look at the power of our study
+summary(CONC5.transformed.lmer)
+#Set the fixed effect size to 0.91 (Based on sensor error limit and SD (ln))
+fixef(CONC5.transformed.lmer)["Hours12"]<-0.91
+fixef(CONC5.transformed.lmer)["Hours24"]<-0.91
+fixef(CONC5.transformed.lmer)["HOurs48"]<-0.91
+fixef(CONC5.transformed.lmer)["Hours72"]<-0.91
+fixef(CONC5.transformed.lmer)["Hours240"]<-0.91
+fixef(CONC5.transformed.lmer)["Hours408"]<-0.91
+fixef(CONC5.transformed.lmer)["Hours576"]<-0.91
+fixef(CONC5.transformed.lmer)["MethodSensor"]<-0.91
+fixef(CONC5.transformed.lmer)["Hours12:MethodSensor"]<-0.91
+fixef(CONC5.transformed.lmer)["Hours24:MethodSensor"]<-0.91
+fixef(CONC5.transformed.lmer)["Hours48:MethodSensor"]<-0.91
+fixef(CONC5.transformed.lmer)["Hours72:MethodSensor"]<-0.91
+fixef(CONC5.transformed.lmer)["Hours240:MethodSensor"]<-0.91
+fixef(CONC5.transformed.lmer)["Hours408:MethodSensor"]<-0.91
+fixef(CONC5.transformed.lmer)["Hours576:MethodSensor"]<-0.91
+#Run the power analysis
+powerSim(CONC5.transformed.lmer,test=fixed("Hours12",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("Hours24",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("Hours48",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("Hours72",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("Hours240",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("Hours408",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("Hours576",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("Hours12:MethodSensor",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("Hours24:MethodSensor",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("Hours48:MethodSensor",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("Hours72:MethodSensor",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("Hours240:MethodSensor",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("Hours408:MethodSensor",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("Hours576:MethodSensor",method=c("t")))
+powerSim(CONC5.transformed.lmer,test=fixed("MethodSensor",method=c("t")))
+# So power here suggests that there is only around a 30% probability that this test would correctly predict
+#that these two groups are statistically different. Considering that the Null Hypothesis (differences are statistically 
+#insignificant) that's to be expected. If we increase the effect size needed to reject the null hypothesis. Power isn't
+#really a useful metric for this type of experiment, and post-hoc power analyses are particularly unhelpful, but it was
+#specifically requested by one of the co-authors and so has been done here. 
