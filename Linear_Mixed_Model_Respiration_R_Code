@@ -1,4 +1,4 @@
-#Linear Mixes Effects Model for CO2 Respiration measured with CO2 Sensor Equipped
+#Linear Mixes Effects Model for CO2 concentration measured with CO2 Sensor Equipped
 #mesocosms vs a traditional Gas Chromatograph. 
 
 #Load Necessary Libraries and Packages
@@ -7,50 +7,164 @@ library(ggplot2)
 library(rstatix)
 library(lme4)
 library(lmerTest)
+library(easystats)
+library(tidyverse)
+library(glmmTMB)
 
-#load in data
+#Load in the data
 RESP<-read.delim(file.choose())
 
 #Check Structure of the data
 str(RESP)
 head(RESP)
+RESP
+#Need to set ID, Sensor, Run, Hours, and Method as "Factors" 
 
-#Need to set ID, Sensor, Run, Timestep, and Method as "Factors" 
-RESP<-RESP%>%convert_as_factor(ID,Sensor,Run, Timestep,Method)
-
+RESP<-RESP%>%convert_as_factor(ID,Sensor,Run,Timestep,Method)
+RESP$Hours<-RESP$Timestep
 #check your work
 str(RESP)
 
-#Get Summary Statistics, group by Timestep and Method
-CONC.summary<-summarySE(RESP,measurevar="Respiration",groupvars=c("Timestep","Method"))
-CONC.summary$Timestep<-ordered(CONC.summary$Timestep,levels=c("0","12","24","48","72","240","408","576"))
+
+#Get Summary Statistics, group by Hours and Method
+RESP.summary<-summarySE(RESP,measurevar="Respiration",groupvars=c("Hours","Method"))
+
 
 #plot the data to visualize
-RESP1.plot<-ggplot(CONC.summary,aes(x=Timestep,y=Respiration,colour=Method,group=Method))+geom_errorbar(aes(ymin=Respiration-se,ymax=Respiration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+RESP1.plot<-ggplot(RESP.summary,aes(x=Hours,y=Respiration,colour=Method,group=Method))+geom_errorbar(aes(ymin=Respiration-se,ymax=Respiration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
 RESP1.plot
+#If we look at the GC and sensor overlap, we can see that there's a bit of separation at times 48 and 72, but otherwise not much, so these are probably not different
 
-#as we can see from the SE overlap, it doesn't look like the sensor measurement and GC measurement are significant
 #but we need to run a mixed model or repeat measure anova to confirm, but as there are data points missing
 #from the sensor data, a linear mixed model is the better approach
+#We want to look at the effect of sensor on the concentration, to see if there is an effect, and if there is an interaction
 
-#run the linear mixed model: 
-RESP1.lmer<-lmer(Respiration~Timestep*Method + (1|Sensor), data=RESP)
-#Here we're treating Timestep and Method as Fixed Effects, and Sensor as random, since there are 
-#theoretically an infinite number of sensors that can be used the sensors used here are just some of the 
-#sensors in a larger pool of potential sensors
+RESP.Sens.Summary<-summarySE(RESP, measurevar = "Respiration", groupvars = c("Hours","Sensor"))
 
-#run an Anova on the linear mixed model
+#Visualize that data
+RESP.sens.plot<-ggplot(RESP.Sens.Summary,aes(x=Hours,y=Respiration,colour=Sensor,group=Sensor))+geom_errorbar(aes(ymin=Respiration-se,ymax=Respiration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+RESP.sens.plot
+#It doesn't look like the different sensors are obviously different from one another
+
+RESP.All.Summary<-summarySE(RESP, measurevar = "Respiration", groupvars = c("Sensor","Method"))
+RESP.All.plot<-ggplot(RESP.All.Summary,aes(x=Method,y=Respiration,colour=Sensor,group=Sensor))+geom_errorbar(aes(ymin=Respiration-se,ymax=Respiration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+RESP.All.plot
+
+#Looking at respiration, we can see that there doesn't seem to be a difference between respiration calculated from 
+#GC vs from sensor, but that there is possibly some differences between the individual sensors. We may not be able to treat
+#sensor as a random effect
+
+
+#Get Summary Statistics, group by Hours and Run
+RESP.Run.Summary<-summarySE(RESP, measurevar = "Respiration", groupvars = c("Hours","Run"))
+
+#Visualize that data
+RESP.Run.plot<-ggplot(RESP.Run.Summary,aes(x=Hours,y=Respiration,colour=Run,group=Run))+geom_errorbar(aes(ymin=Respiration-se,ymax=Respiration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+RESP.Run.plot
+# there's no obvious effect of run on the concentration, so Run can remain being considered a random effect. 
+
+#run a linear mixed model treating sensor as random to try and rule out run as a significant effect: 
+RESP$Hours<-RESP$Timestep
+RESP.lmer<-lmer(Respiration~Hours*Method*Run + (1|Sensor),data=RESP)
+RESP.lmer.anova<-anova(RESP.lmer)
+RESP.lmer.anova
+#When we check the ANOVA, Nothing is significant, but we're getting P values of 1, so this is probably a bit tooo good
+#to be true. Lets try it with Run as a random effect
+
+RESP1.lmer<-lmer(Respiration~Hours*Method*Sensor + (1|Run), data=RESP)
+#we get a singular fit, So we've over parameterized
+
+#Check the Assumption of normality
+RESP1.qqplot<-qqnorm(resid(RESP1.lmer))
+RESP1.qqline<-qqline(resid(RESP1.lmer))
+#Imperfect Normality, there are some pretty clear outliers here, however lme models are robust to
+#violations of normality, so we're going to go ahead and still run anova 
+
+#run an Anova on the linear mixed model wth a type II Wald test
 RESP1.lmer.Anova<-Anova(RESP1.lmer)
 RESP1.lmer.Anova
-#We see here that Timestep is the only significant factor, which is exactly as expected for incubations
-#and there are no interaction effects between timestep and method
 
-#Now we'll run anova using a type III ANOVA using Satterthwaite's method
+#Timestep and sensor are both significant effects, but method is not, however there is a significant interaction
+#effect, so we may need to investigate that further, We're also going to do an anova using a type III ANOVA 
+#using Satterthwaite's method
+
 RESP1.lmer.anova<-anova(RESP1.lmer)
 RESP1.lmer.anova
-#Again, only timestep is significant, but since it's not a variable we're interested in (again,
-#a change in Respiration with time is expected), we'll se intercepts for every timestep (treat it as random)
+#Now we see no significant effects, but p-values are all 1, so again, this looks like we're overparameterized
 
-CONC2.lmer<-lmer(Respiration~Method + (Timestep|Sensor),data=RESP,REML=FALSE)
-anova(CONC2.lmer)                 
-#Now having only checked on the Method, we find that there is no significant effect of method on the Respiration
+
+plot(RESP1.lmer,resid(.,scaled=TRUE)~fitted(.),abline=0,pch=16,xlab="Fitted values",ylab="Standardised residuals")
+#the plot is funnel shaped, indicating that we're violating the assumption of homoskedasticity in the model
+#let's plot this with color to see if we can discern any further patterns
+#it's further apparent that the residuals vary more as we get up to higher value
+plot(RESP1.lmer,resid(.,scaled=TRUE)~fitted(.),abline=0,pch=16,col=CONC$Sensor,xlab="Fitted values",ylab="Standardised Residuals")
+# all of these sensors are showing clear heteroskedasticity, so we're going to need to transform the data
+
+#let's start by reading in log transformed data. Because we have some negative values, We're going to need to 
+#add a constant to all values before log transforming the data. We just added 8.1395*10^-12 to each number so that the 
+
+RESP2<-read.delim(file.choose())
+#read in the log transformed data
+head(RESP2)
+str(RESP2)
+
+RESP2<-RESP2%>%convert_as_factor(ID,Sensor,Run, Hours,Method)
+
+#check your work
+str(RESP2)
+RESP2$Respiration<-RESP2$Respiration.Ln.Transform
+
+#Get Summary Statistics, group by Hours and Method
+RESP2.summary<-summarySE(RESP2,measurevar="Respiration",groupvars=c("Hours","Method"))
+
+
+#plot the data to visualize
+RESP2.plot<-ggplot(RESP2.summary,aes(x=Hours,y=Respiration,colour=Method,group=Method))+geom_errorbar(aes(ymin=Respiration-se,ymax=Respiration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+RESP2.plot
+#Plots look like they aren't significantly different again
+
+RESP2.Sens.Summary<-summarySE(RESP2, measurevar = "Respiration", groupvars = c("Hours","Sensor"))
+
+#Visualize that data
+RESP2.sens.plot<-ggplot(RESP2.Sens.Summary,aes(x=Hours,y=Respiration,colour=Sensor,group=Sensor))+geom_errorbar(aes(ymin=Respiration-se,ymax=Respiration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+RESP2.sens.plot
+#No obvious differences
+
+RESP2.All.Summary<-summarySE(RESP2, measurevar = "Respiration", groupvars = c("Sensor","Method"))
+RESP2.All.plot<-ggplot(RESP2.All.Summary,aes(x=Method,y=Respiration,colour=Sensor,group=Sensor))+geom_errorbar(aes(ymin=Respiration-se,ymax=Respiration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+RESP2.All.plot
+#Sensor vs GC measurements don't look obviously different. 
+
+
+#Get Summary Statistics, group by Hours and Run
+RESP2.Run.Summary<-summarySE(RESP2, measurevar = "Respiration", groupvars = c("Hours","Run"))
+
+#Visualize that data
+RESP2.Run.plot<-ggplot(RESP2.Run.Summary,aes(x=Hours,y=Respiration,colour=Run,group=Run))+geom_errorbar(aes(ymin=Respiration-se,ymax=Respiration+se),width=.2)+geom_line()+theme_bw()+geom_point(size=4)
+RESP2.Run.plot
+#Again, looks as though it's approporiate to treat Run as a random effect
+
+#run a linear mixed model treating sensor as random to try and rule out run as a significant effect: 
+RESP2.transformed.lmer<-lmer(Respiration~Hours*Method*Sensor + (1|Run),data=RESP2)
+RESP2.transformed.lmer.anova<-anova(RESP2.transformed.lmer)
+RESP2.transformed.lmer.anova
+check_model(RESP2.transformed.lmer)
+#great model fit. a bit heteroskedastic still
+
+#try with run and sensor both as random effects
+RESP3.transformed.lmer<-lmer(Respiration~Hours*Method +(Sensor|Run),data=RESP2)
+RESP3.transformed.lmer.anova<-anova(RESP3.transformed.lmer)
+RESP3.transformed.lmer.anova
+check_model(RESP3.transformed.lmer)
+#better06815
+#We do have some evidence that there are some interactions between sensor and method, 
+#and between run and method, but the effects appear to be random, and we get the best model fit
+#when we treat them as such. This model ended up having a singular fit though, so not ideal
+
+#try with run and sensor both as random effects
+RESP4.transformed.lmer<-lmer(Respiration~Hours*Method +(1|Run)+(1|Sensor),data=RESP2)
+RESP4.transformed.lmer.anova<-anova(RESP4.transformed.lmer)
+RESP4.transformed.lmer.anova
+check_model(RESP4.transformed.lmer)
+#Lovely fit. best homogeneity best normality, just generally the best fit so far. 
+#Anova is showing that time is significant, but method is not and there isn't an interaction between method and time
